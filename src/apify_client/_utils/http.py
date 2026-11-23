@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import quote, urlsplit
 
 from pydantic import BaseModel, ValidationError
+from pydantic_core import PydanticCustomError
 
 from apify_client._consts import (
     ALREADY_COMPRESSED_MEDIA_TYPE_PREFIXES,
@@ -142,6 +143,31 @@ def response_to_dict(response: HttpResponse) -> dict:
     raise ValueError(f'The response is not a dictionary. Got: {type(data).__name__}')
 
 
+def _rebuild_validation_error(exc: ValidationError) -> ResponseValidationError:
+    """Rebuild a pydantic validation error as a `ResponseValidationError` with the same entries.
+
+    The entries `errors()` returns can be fed back to `from_exception_data()` for most error types. A few are rejected
+    because they carry extra context that the error type needs to be rebuilt, for example the `ValueError` behind an
+    invalid e-mail address, or because the type is a custom one. For those, each entry is rebuilt as a custom error that
+    keeps its type, message, location and input.
+    """
+    errors = exc.errors(include_url=False)
+
+    try:
+        # The entries are accepted as input details, only their declared types differ.
+        return ResponseValidationError.from_exception_data(exc.title, cast('list[InitErrorDetails]', errors))
+    except (KeyError, TypeError, ValueError):
+        fallback_errors: list[InitErrorDetails] = [
+            {
+                'type': PydanticCustomError(entry['type'], entry['msg']),  # ty: ignore[invalid-argument-type]
+                'loc': entry['loc'],
+                'input': entry['input'],
+            }
+            for entry in errors
+        ]
+        return ResponseValidationError.from_exception_data(exc.title, fallback_errors)
+
+
 def validate_response(model: type[_ModelT], data: Any) -> _ModelT:
     """Validate a parsed API response body against a model.
 
@@ -161,9 +187,7 @@ def validate_response(model: type[_ModelT], data: Any) -> _ModelT:
     try:
         return model.model_validate(data)
     except ValidationError as exc:
-        # The details `errors()` returns are accepted as input details, only their declared types differ.
-        line_errors = cast('list[InitErrorDetails]', exc.errors(include_url=False))
-        error = ResponseValidationError.from_exception_data(exc.title, line_errors)
+        error = _rebuild_validation_error(exc)
 
         error.http_method = log_context.method.get()
         url = log_context.url.get()

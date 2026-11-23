@@ -142,6 +142,16 @@ class _ContextInjectingFilter(logging.Filter):
         return True
 
 
+def _reset_request_details() -> None:
+    """Clear the HTTP method and URL of the request that ran last in this thread or task.
+
+    The HTTP client sets them for each request it sends. Clearing them at the start of a client method keeps a custom
+    client that does not set them from reporting the details of an earlier request.
+    """
+    log_context.method.set(None)
+    log_context.url.set(None)
+
+
 def _injects_client_details_to_log_context(fun: Callable) -> Callable:
     """Wrap a method to inject resource client details into log context before execution."""
     if inspect.iscoroutinefunction(fun):
@@ -150,6 +160,7 @@ def _injects_client_details_to_log_context(fun: Callable) -> Callable:
         async def async_wrapper(resource_client: _BaseClient, *args: Any, **kwargs: Any) -> Any:
             log_context.client_method.set(fun.__qualname__)  # ty: ignore[missing-attribute]
             log_context.resource_id.set(resource_client._resource_id)  # noqa: SLF001
+            _reset_request_details()
 
             return await fun(resource_client, *args, **kwargs)
 
@@ -161,6 +172,7 @@ def _injects_client_details_to_log_context(fun: Callable) -> Callable:
         async def async_generator_wrapper(resource_client: _BaseClient, *args: Any, **kwargs: Any) -> Any:
             log_context.client_method.set(fun.__qualname__)  # ty: ignore[missing-attribute]
             log_context.resource_id.set(resource_client._resource_id)  # noqa: SLF001
+            _reset_request_details()
 
             async for item in fun(resource_client, *args, **kwargs):
                 yield item
@@ -171,6 +183,7 @@ def _injects_client_details_to_log_context(fun: Callable) -> Callable:
     def wrapper(resource_client: _BaseClient, *args: Any, **kwargs: Any) -> Any:
         log_context.client_method.set(fun.__qualname__)  # ty: ignore[missing-attribute]
         log_context.resource_id.set(resource_client._resource_id)  # noqa: SLF001
+        _reset_request_details()
 
         return fun(resource_client, *args, **kwargs)
 
